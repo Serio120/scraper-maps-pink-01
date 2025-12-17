@@ -7,106 +7,106 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 def scrape_data(query: str, min_results: int):
     """
-    Navega directamente a Google Maps con una consulta, extrae los detalles
-    de los resultados y los guarda en un archivo CSV.
+    Navega directamente a Google Maps con una consulta de búsqueda mejorada, extrae
+    detalles usando selectores robustos y los guarda en un archivo CSV.
 
     Args:
         query (str): El término de búsqueda.
         min_results (int): El número mínimo de resultados a intentar extraer.
     """
-    print("Iniciando el proceso de scraping (método directo a Google Maps)...")
+    print("Iniciando el proceso de scraping (v4, enfoque directo y robusto)...")
 
     with sync_playwright() as p:
         browser = p.firefox.launch(headless=True)
-        page = browser.new_page()
+        # Usar un user agent común para evitar ser bloqueado
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0")
+        page = context.new_page()
 
         try:
-            # --- 1. Construir URL y navegar directamente a Google Maps ---
+            # --- 1. Navegar directamente a Google Maps ---
             encoded_query = urllib.parse.quote_plus(query)
             maps_url = f"https://www.google.com/maps/search/{encoded_query}"
             
             print(f"Navegando directamente a: {maps_url}")
-            page.goto(maps_url, timeout=30000) # Aumentar timeout para la carga inicial
+            page.goto(maps_url, timeout=30000)
 
-            # Aceptar cookies si el botón aparece (puede aparecer también en Maps)
+            # --- Aceptar Cookies (si aparece) ---
             try:
-                # Usamos un selector más genérico para el consentimiento
-                accept_button = page.locator("//button[contains(., 'Accept all') or contains(., 'Aceptar todo')]").first
-                accept_button.click(timeout=5000)
+                # Selector genérico para el botón de consentimiento
+                consent_button = page.locator("//form[.//button[contains(., 'Accept all') or contains(., 'Aceptar todo')]]//button").last
+                consent_button.click(timeout=5000)
                 print("Banner de cookies aceptado.")
-                # Espera a que la página se estabilice después del clic
-                page.wait_for_load_state("networkidle")
+                page.wait_for_load_state("networkidle", timeout=5000)
             except PlaywrightTimeoutError:
-                print("No se encontró el banner de cookies. Continuando.")
+                print("No se encontró el banner de cookies o ya fue aceptado.")
 
-            # --- 2. Hacer scroll para cargar múltiples resultados ---
-            results_panel_selector = 'div[role="feed"]'
-            print(f"Esperando el panel de resultados ('{results_panel_selector}')...")
-            page.wait_for_selector(results_panel_selector, state='visible', timeout=15000)
+            # --- 2. Hacer Scroll para Cargar Resultados ---
+            feed_selector = 'div[role="feed"]'
+            print(f"Esperando el panel de resultados ('{feed_selector}')...")
+            page.wait_for_selector(feed_selector, state='visible', timeout=20000)
             print("Panel encontrado. Haciendo scroll para cargar resultados...")
 
-            results_selector = f'{results_panel_selector} > div > div[role="article"]'
+            result_selector = f'{feed_selector} div[role="article"]'
+            loaded_results = page.locator(result_selector)
             
-            last_count = 0
-            while page.locator(results_selector).count() < min_results:
-                current_count = page.locator(results_selector).count()
-                print(f"Resultados cargados actualmente: {current_count}")
-                # El scroll se hace sobre el panel de resultados, no sobre la página entera
-                page.locator(results_panel_selector).evaluate("node => node.scrollTop = node.scrollHeight")
-                try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
-                    time.sleep(2) # Pausa para permitir la renderización
-                except PlaywrightTimeoutError:
-                    print("Timeout de networkidle durante el scroll, posible final de la lista.")
+            previous_count = 0
+            while loaded_results.count() < min_results:
+                current_count = loaded_results.count()
+                print(f"Resultados cargados: {current_count}/{min_results}")
+                
+                # Hace scroll en el panel de resultados
+                page.locator(feed_selector).evaluate("node => node.scrollTo(0, node.scrollHeight)")
+                # Espera un tiempo fijo para que los nuevos resultados se carguen y rendericen
+                time.sleep(3)
 
-                new_count = page.locator(results_selector).count()
-                if new_count == last_count:
+                if loaded_results.count() == current_count:
                     print("No se han encontrado más resultados al hacer scroll. Deteniendo.")
                     break
-                last_count = new_count
+            
+            all_results = loaded_results.all()[:min_results]
+            print(f"Se procesarán {len(all_results)} resultados. Extrayendo datos...")
 
-            all_results = page.locator(results_selector).all()
-            print(f"Se encontraron {len(all_results)} resultados. Procediendo a la extracción.")
-
-            # --- 3. Extraer los datos de cada resultado ---
+            # --- 3. Extraer Datos con Selectores Robustos ---
             extracted_data = []
-            for i, result_locator in enumerate(all_results[:min_results]):
-                print(f"--- Procesando resultado {i+1}/{len(all_results[:min_results])} ---")
+            for i, result_locator in enumerate(all_results):
+                print(f"--- Procesando resultado {i+1}/{len(all_results)} ---")
                 try:
                     result_locator.click()
-                    page.wait_for_load_state("networkidle", timeout=5000)
-                except PlaywrightTimeoutError as e:
-                    print(f"Timeout al hacer clic o esperar red. Saltando resultado. Error: {e}")
+                    # Espera a que el panel principal se actualice después del clic
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"Error al hacer clic en el resultado. Saltando. Error: {e}")
                     continue
                 
-                # Extraer datos del panel principal que se actualiza
-                name_selector = 'h1.DUwDvf.fontHeadlineLarge'
-                address_selector = 'button[data-item-id="address"]',
-                website_selector = 'a[data-item-id="authority"]',
-                phone_selector = 'button[data-item-id*="phone"]',
-                rating_selector = 'div.F7nice'
+                # Panel principal que contiene los detalles del lugar
+                details_panel_selector = 'div[role="main"]'
+                main_panel = page.locator(details_panel_selector).first
 
-                def get_text(selector, default="N/A"):
-                    try: return page.locator(selector).first.inner_text(timeout=1000)
+                # Función para extraer texto de forma segura
+                def get_text_from_panel(selector, default="N/A"):
+                    try: return main_panel.locator(selector).first.inner_text(timeout=1500)
                     except: return default
 
-                name = get_text(name_selector)
-                address = get_text(address_selector)
-                website = get_text(website_selector)
-                phone = get_text(phone_selector)
-                rating_text = get_text(rating_selector)
+                # El nombre es casi siempre el H1
+                name = get_text_from_panel('h1')
+                
+                # Usamos selectores de atributos que son más estables
+                address = get_text_from_panel('button[data-item-id="address"]')
+                website = get_text_from_panel('a[data-item-id="authority"]')
+                phone = get_text_from_panel('button[data-item-id*="phone"]')
+                rating_text = get_text_from_panel('div.F7nice')
 
                 print(f"  Nombre: {name}")
 
                 extracted_data.append({
                     "Nombre": name,
-                    "Valoracion_y_Resenas": rating_text,
+                    "Valoracion_y_Resenas": rating_text.replace("\n", " "),
                     "Direccion": address,
                     "Web": website,
                     "Telefono": phone,
                 })
 
-            # --- 4. Guardar los datos en un archivo CSV ---
+            # --- 4. Guardar en CSV ---
             if not extracted_data:
                 print("No se pudo extraer ningún dato.")
                 return
@@ -114,24 +114,24 @@ def scrape_data(query: str, min_results: int):
             output_file = "colegios_veterinarios.csv"
             print(f"Extracción completada. Guardando datos en '{output_file}'...")
             df = pd.DataFrame(extracted_data)
-            df.to_csv(output_file, index=False)
+            df.to_csv(output_file, index=False, encoding='utf-8')
             print(f"¡Éxito! Los datos se han guardado en {output_file}.")
 
-        except PlaywrightTimeoutError as e:
-            print(f"Error de Timeout: {e}")
-            page.screenshot(path="error_screenshot.png")
-            print("Se ha guardado una captura de pantalla del error en 'error_screenshot.png'.")
         except Exception as e:
             print(f"Ha ocurrido un error inesperado: {e}")
             page.screenshot(path="error_screenshot.png")
             print("Se ha guardado una captura de pantalla del error en 'error_screenshot.png'.")
         finally:
             print("Cerrando el navegador.")
-            browser.close()
+            if "browser" in locals() and browser.is_connected():
+                browser.close()
 
 if __name__ == "__main__":
-    query_to_search = sys.argv[1] if len(sys.argv) > 1 else "Colegios Veterinarios de Cataluña"
-    try: results_to_fetch = int(sys.argv[2]) if len(sys.argv) > 2 else 20
-    except ValueError: results_to_fetch = 20
+    # Consulta de búsqueda mejorada por defecto
+    query_to_search = sys.argv[1] if len(sys.argv) > 1 else "Veterinario en Cataluña"
+    try:
+        results_to_fetch = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+    except (ValueError, IndexError):
+        results_to_fetch = 20
 
     scrape_data(query=query_to_search, min_results=results_to_fetch)
